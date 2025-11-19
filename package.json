@@ -18,6 +18,8 @@
     "@aws-sdk/client-s3": "^3.666.0",
     "@aws-sdk/s3-request-presigner": "^3.666.0",
     "@fastify/cors": "^10.0.0",
+    "@fastify/env": "^5.0.3",
+    "@fastify/formbody": "^8.0.2",
     "@fastify/helmet": "^13.0.2",
     "@fastify/jwt": "^5.0.0",
     "@fastify/rate-limit": "^10.0.0",
@@ -26,6 +28,7 @@
     "@node-rs/bcrypt": "^1.10.7",
     "@prisma/client": "6.19.0",
     "date-fns": "^4.1.0",
+    "dotenv": "^17.2.3",
     "fastify": "^5.6.2",
     "fastify-plugin": "^5.1.0",
     "zod": "^3.23.8"
