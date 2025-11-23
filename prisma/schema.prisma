@@ -7,6 +7,107 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Store {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String    @unique
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  orders    Order[]
+  products  Product[]
+  users     User[]
+
+  @@index([slug])
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  role      Role     @default(CUSTOMER)
+  createdAt DateTime @default(now())
+  storeId   String?
+  orders    Order[]
+  store     Store?   @relation(fields: [storeId], references: [id])
+}
+
+model Product {
+  id             String            @id @default(cuid())
+  sku            String
+  title          String
+  slug           String            @unique
+  description    String?
+  priceCents     Int
+  previousPriceCents  Int?
+  currency       String            @default("BDT")
+  stock          Int               @default(0)
+  images         Json
+  active         Boolean           @default(true)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  features       String?
+  galleryUrls    Json?
+  note           String?
+  optionsJson    Json?
+  storeId        String
+  thumbnailUrl   String?
+  videoPosterUrl String?
+  videoUrl       String?
+  OrderItem      OrderItem[]
+  store          Store             @relation(fields: [storeId], references: [id])
+  categories     ProductCategory[]
+
+  @@index([storeId, active, createdAt])
+}
+
+model Category {
+  id          String            @id @default(cuid())
+  title       String
+  slug        String            @unique
+  description String?
+  iconUrl     String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  products    ProductCategory[]
+}
+
+model ProductCategory {
+  productId  String
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id])
+   product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@id([productId, categoryId])
+}
+
+model Order {
+  id            String      @id @default(cuid())
+  number        Int         @unique @default(autoincrement())
+  userId        String
+  status        OrderStatus @default(PENDING)
+  subtotalCents Int
+  shippingCents Int         @default(0)
+  taxCents      Int         @default(0)
+  totalCents    Int
+  createdAt     DateTime    @default(now())
+  storeId       String
+  store         Store       @relation(fields: [storeId], references: [id])
+  user          User        @relation(fields: [userId], references: [id])
+  items         OrderItem[]
+
+  @@index([storeId, status, createdAt])
+}
+
+model OrderItem {
+  id         String  @id @default(cuid())
+  orderId    String
+  productId  String
+  qty        Int
+  priceCents Int
+  order      Order   @relation(fields: [orderId], references: [id])
+  product    Product @relation(fields: [productId], references: [id])
+}
+
 enum Role {
   ADMIN
   STAFF
@@ -19,57 +120,4 @@ enum OrderStatus {
   FULFILLED
   CANCELLED
   REFUNDED
-}
-
-model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  password  String
-  role      Role     @default(CUSTOMER)
-  createdAt DateTime @default(now())
-  orders    Order[]
-}
-
-model Product {
-  id          String      @id @default(cuid())
-  sku         String      @unique
-  title       String
-  slug        String      @unique
-  description String?
-  priceCents  Int
-  currency    String      @default("USD")
-  stock       Int         @default(0)
-  images      Json
-  active      Boolean     @default(true)
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-  OrderItem   OrderItem[]
-
-  @@index([active, createdAt])
-}
-
-model Order {
-  id            String      @id @default(cuid())
-  number        Int         @unique @default(autoincrement())
-  userId        String
-  user          User        @relation(fields: [userId], references: [id])
-  items         OrderItem[]
-  status        OrderStatus @default(PENDING)
-  subtotalCents Int
-  shippingCents Int         @default(0)
-  taxCents      Int         @default(0)
-  totalCents    Int
-  createdAt     DateTime    @default(now())
-
-  @@index([status, createdAt])
-}
-
-model OrderItem {
-  id         String  @id @default(cuid())
-  orderId    String
-  productId  String
-  qty        Int
-  priceCents Int
-  order      Order   @relation(fields: [orderId], references: [id])
-  product    Product @relation(fields: [productId], references: [id])
 }

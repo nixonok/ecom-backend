@@ -13,6 +13,9 @@ import dashboardRoutes from './routes/dashboard';
 import uploadsRoutes from './routes/uploads';
 import nextauthExchangeRoutes from './routes/nextauth-exchange';
 
+import categoryRoutes from './routes/categories';
+
+
 declare module 'fastify' {
   interface FastifyInstance {
     auth: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
@@ -92,6 +95,8 @@ app.register(productRoutes);
 app.register(orderRoutes);
 app.register(dashboardRoutes);
 app.register(uploadsRoutes);
+
+app.register(categoryRoutes);
 
 const port = Number(process.env.PORT || 4000);
 const host = '0.0.0.0';
