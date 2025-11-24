@@ -27,6 +27,7 @@ const productDto = z.object({
   features: z.string().optional().nullable(),
   note: z.string().optional().nullable(),
   priceCents: z.number().int().nonnegative(),
+  previousPriceCents: z.number().int().nonnegative().optional().nullable(),
   currency: z.string().default('USD'),
   stock: z.number().int().nonnegative().default(0),
   featured: z.boolean().default(true),
@@ -77,7 +78,14 @@ export default async function productRoutes (app: FastifyInstance) {
         where,
         take: limit,
         skip,
-        orderBy: { createdAt: 'desc' }
+        orderBy: { createdAt: 'desc' },
+        include: {
+          categories: {
+            include: {
+              category: true
+            }
+          }
+        }
       }),
       prisma.product.count({ where })
     ])
@@ -88,7 +96,16 @@ export default async function productRoutes (app: FastifyInstance) {
   // Single product
   app.get('/products/:id', async (req, reply) => {
     const id = (req.params as any).id as string
-    const item = await prisma.product.findUnique({ where: { id } })
+    const item = await prisma.product.findUnique({
+      where: { id },
+      include: {
+        categories: {
+          include: {
+            category: true
+          }
+        }
+      }
+    })
     if (!item) return reply.code(404).send({ error: 'Not found' })
     return reply.send(item)
   })
@@ -123,9 +140,11 @@ export default async function productRoutes (app: FastifyInstance) {
           features: body.features ?? null,
           note: body.note ?? null,
           priceCents: body.priceCents,
+          previousPriceCents: body.previousPriceCents ?? null,
           currency: body.currency,
           stock: body.stock,
-          active: body.featured,
+          active: true,
+          featured: body.featured ?? false,
           // media
           thumbnailUrl: body.thumbnailUrl ?? null,
           galleryUrls: body.galleryUrls,
@@ -181,9 +200,15 @@ export default async function productRoutes (app: FastifyInstance) {
           note: body.note !== undefined ? body.note : undefined,
           priceCents:
             body.priceCents !== undefined ? body.priceCents : undefined,
+
+          previousPriceCents:
+            body.previousPriceCents !== undefined
+              ? body.previousPriceCents
+              : undefined,
+
           currency: body.currency,
           stock: body.stock,
-          active: body.featured,
+          featured: body.featured !== undefined ? body.featured : undefined,
           thumbnailUrl:
             body.thumbnailUrl !== undefined ? body.thumbnailUrl : undefined,
           galleryUrls:
@@ -225,6 +250,37 @@ export default async function productRoutes (app: FastifyInstance) {
       } catch (err) {
         console.error('DELETE /products/:id failed', id, err)
         return reply.code(500).send({ error: 'Delete failed' })
+      }
+    }
+  )
+
+  // Update product active/draft status (admin only)
+  app.patch(
+    '/products/:id/status',
+    { preHandler: (app as any).admin },
+    async (req, reply) => {
+      const id = (req.params as any).id as string
+
+      // Expect body like { active: boolean }
+      const body = req.body as any
+      const active = typeof body?.active === 'boolean' ? body.active : null
+
+      if (active === null) {
+        return reply
+          .code(400)
+          .send({ error: "Missing or invalid 'active' boolean" })
+      }
+
+      try {
+        const updated = await prisma.product.update({
+          where: { id },
+          data: { active }
+        })
+
+        return reply.send(updated)
+      } catch (err) {
+        console.error('PATCH /products/:id/status failed', id, err)
+        return reply.code(500).send({ error: 'Failed to update status' })
       }
     }
   )

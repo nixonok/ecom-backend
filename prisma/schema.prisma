@@ -32,30 +32,31 @@ model User {
 }
 
 model Product {
-  id             String            @id @default(cuid())
-  sku            String
-  title          String
-  slug           String            @unique
-  description    String?
-  priceCents     Int
-  previousPriceCents  Int?
-  currency       String            @default("BDT")
-  stock          Int               @default(0)
-  images         Json
-  active         Boolean           @default(true)
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  features       String?
-  galleryUrls    Json?
-  note           String?
-  optionsJson    Json?
-  storeId        String
-  thumbnailUrl   String?
-  videoPosterUrl String?
-  videoUrl       String?
-  OrderItem      OrderItem[]
-  store          Store             @relation(fields: [storeId], references: [id])
-  categories     ProductCategory[]
+  id                 String            @id @default(cuid())
+  sku                String
+  title              String
+  slug               String            @unique
+  description        String?
+  priceCents         Int
+  previousPriceCents Int?
+  currency           String            @default("BDT")
+  stock              Int               @default(0)
+  images             Json
+  active             Boolean           @default(true)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  features           String?
+  galleryUrls        Json?
+  note               String?
+  optionsJson        Json?
+  storeId            String
+  featured           Boolean           @default(false)
+  thumbnailUrl       String?
+  videoPosterUrl     String?
+  videoUrl           String?
+  OrderItem          OrderItem[]
+  store              Store             @relation(fields: [storeId], references: [id])
+  categories         ProductCategory[]
 
   @@index([storeId, active, createdAt])
 }
@@ -75,7 +76,7 @@ model ProductCategory {
   productId  String
   categoryId String
   category   Category @relation(fields: [categoryId], references: [id])
-   product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@id([productId, categoryId])
 }
@@ -104,8 +105,8 @@ model OrderItem {
   productId  String
   qty        Int
   priceCents Int
-  order      Order   @relation(fields: [orderId], references: [id])
-  product    Product @relation(fields: [productId], references: [id])
+  order      Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product    Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 }
 
 enum Role {
