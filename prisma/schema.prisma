@@ -32,31 +32,38 @@ model User {
 }
 
 model Product {
-  id                 String            @id @default(cuid())
+  id                 String  @id @default(cuid())
   sku                String
   title              String
-  slug               String            @unique
+  slug               String  @unique
   description        String?
   priceCents         Int
   previousPriceCents Int?
-  currency           String            @default("BDT")
-  stock              Int               @default(0)
-  images             Json
-  active             Boolean           @default(true)
-  createdAt          DateTime          @default(now())
-  updatedAt          DateTime          @updatedAt
-  features           String?
-  galleryUrls        Json?
-  note               String?
-  optionsJson        Json?
-  storeId            String
-  featured           Boolean           @default(false)
-  thumbnailUrl       String?
-  videoPosterUrl     String?
-  videoUrl           String?
-  OrderItem          OrderItem[]
-  store              Store             @relation(fields: [storeId], references: [id])
-  categories         ProductCategory[]
+
+  purchasePriceCents Int? @default(0)
+  pageView           Int? @default(0)
+  inCart             Int? @default(0)
+  totalUnitsSold     Int  @default(0)
+  totalRevenueCents  Int  @default(0)
+
+  currency       String            @default("BDT")
+  stock          Int               @default(0)
+  images         Json
+  active         Boolean           @default(true)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  features       String?
+  galleryUrls    Json?
+  note           String?
+  optionsJson    Json?
+  storeId        String
+  featured       Boolean           @default(false)
+  thumbnailUrl   String?
+  videoPosterUrl String?
+  videoUrl       String?
+  OrderItem      OrderItem[]
+  store          Store             @relation(fields: [storeId], references: [id])
+  categories     ProductCategory[]
 
   @@index([storeId, active, createdAt])
 }
@@ -82,31 +89,63 @@ model ProductCategory {
 }
 
 model Order {
-  id            String      @id @default(cuid())
-  number        Int         @unique @default(autoincrement())
-  userId        String
+  id          String @id @default(cuid())
+  orderNumber String @default("") // human-readable ID (e.g. SH-2025-0001)
+  orderSerial Int    @unique @default(autoincrement())
+
+  customerName String  @default("")
+  phone        String  @default("")
+  email        String? @default("")
+  userId       String? @default("")
+  user         User?   @relation(fields: [userId], references: [id])
+
+  // Address
+  streetAddress String?
+  division      String?
+  district      String?
+  upazila       String?
+  city          String?
+  postalCode    String?
+  customerNote  String?
+  adminNote     String?
   status        OrderStatus @default(PENDING)
+  paymentMethod PaymentMethod @default(COD)
+
   subtotalCents Int
-  shippingCents Int         @default(0)
-  taxCents      Int         @default(0)
+  deliveryCents Int    @default(0)
+  taxCents      Int    @default(0)
   totalCents    Int
-  createdAt     DateTime    @default(now())
-  storeId       String
-  store         Store       @relation(fields: [storeId], references: [id])
-  user          User        @relation(fields: [userId], references: [id])
-  items         OrderItem[]
+  currency      String @default("BDT")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  storeId String
+  store   Store  @relation(fields: [storeId], references: [id])
+
+  items OrderItem[]
 
   @@index([storeId, status, createdAt])
 }
 
 model OrderItem {
-  id         String  @id @default(cuid())
-  orderId    String
-  productId  String
-  qty        Int
-  priceCents Int
-  order      Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product    Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  id        String @id @default(cuid())
+  orderId   String
+  productId String
+
+  quantity       Int
+  unitPriceCents Int
+  lineTotalCents Int
+
+  productTitle    String
+  productSku      String
+  productImageUrl String?
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([productId])
 }
 
 enum Role {
@@ -117,8 +156,17 @@ enum Role {
 
 enum OrderStatus {
   PENDING
-  PAID
-  FULFILLED
+  CONFIRMED
+  SHIPPED
+  DELIVERED
   CANCELLED
   REFUNDED
+}
+
+enum PaymentMethod {
+  COD
+  BKASH
+  NAGAD
+  CARD
+  OTHER
 }

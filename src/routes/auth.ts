@@ -27,7 +27,7 @@ export default async function authRoutes(app: FastifyInstance) {
         { id: user.id, role: user.role, email: user.email },
         { expiresIn: '7d' }
       )
-      return reply.send({ token, role: user.role })
+      return reply.send({ token, role: user.role, storeId: user.storeId })
     }
   )
 }
