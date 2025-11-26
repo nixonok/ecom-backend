@@ -42,7 +42,10 @@ const productDto = z.object({
   optionsJson: z.array(productOptionDto).optional().default([]),
 
   // categories from dashboard (IDs or slugs)
-  categoryIds: z.array(z.string()).optional().default([])
+  categoryIds: z.array(z.string()).optional().default([]),
+
+    // Required now
+  storeId: z.string().min(1),
 })
 
 // for partial updates
@@ -53,7 +56,7 @@ const productUpdateDto = productDto.partial()
  *   request.user = { id: string; role: "ADMIN" | "STAFF"; storeId: string | null }
  */
 type AdminRequest = FastifyRequest & {
-  user?: { id: string; role: string; storeId?: string | 'sh_admin_v4' }
+  user?: { id: string; role: string; storeId: string}
 }
 
 export default async function productRoutes (app: FastifyInstance) {
@@ -111,74 +114,88 @@ export default async function productRoutes (app: FastifyInstance) {
   })
 
   // Create product (admin only)
-  app.post(
-    '/products',
-    { preHandler: (app as any).admin },
-    async (req, reply) => {
-      const adminReq = req as AdminRequest
-      const user = adminReq.user
+app.post(
+  '/products',
+  { preHandler: (app as any).admin },
+  async (req, reply) => {
+    const adminReq = req as AdminRequest;
+    const user = adminReq.user;
 
-      const body = productDto.parse(req.body)
+    const body = productDto.parse(req.body);
 
-      const store = await prisma.store.findFirst({
-        where: { slug: 'shop-hikes' }
-      })
-
-      // if (!store) {
-      //   return reply
-      //     .code(500)
-      //     .send({ error: "Default store not found (slug: shop-hikes)" });
-      // }
-
-      console.log('\n\nSlug received from Admin:', body.slug, '\n\n')
-      const created = await prisma.product.create({
-        data: {
-          sku: body.sku,
-          title: body.title,
-          slug: body.slug,
-          description: body.description ?? null,
-          features: body.features ?? null,
-          note: body.note ?? null,
-          priceCents: body.priceCents,
-          previousPriceCents: body.previousPriceCents ?? null,
-          currency: body.currency,
-          stock: body.stock,
-          active: true,
-          featured: body.featured ?? false,
-          // media
-          thumbnailUrl: body.thumbnailUrl ?? null,
-          galleryUrls: body.galleryUrls,
-          videoUrl: body.videoUrl ?? null,
-          videoPosterUrl: body.videoPosterUrl ?? null,
-          // options: exact ProductOption[] JSON from dashboard
-          optionsJson: body.optionsJson,
-          // legacy images[] for compatibility with existing UI
-          images: body.galleryUrls,
-          // store relation (required)
-          storeId: store!.id,
-          // categories: create Category if missing, then link
-          categories:
-            (body.categoryIds ?? []).length > 0
-              ? {
-                  create: (body.categoryIds ?? []).map(rawIdOrSlug => ({
-                    category: {
-                      connectOrCreate: {
-                        where: { id: rawIdOrSlug },
-                        create: {
-                          title: rawIdOrSlug,
-                          slug: rawIdOrSlug.toLowerCase()
-                        }
-                      }
-                    }
-                  }))
-                }
-              : undefined
-        }
-      })
-
-      return reply.code(201).send(created)
+    // REQUIRED: storeId must come from frontend DTO
+    if (!body.storeId) {
+      return reply.code(400).send({ error: "storeId is required" });
     }
-  )
+
+    // Security: ensure this admin owns the store
+    if (!user?.storeId || user.storeId !== body.storeId) {
+      return reply.code(403).send({
+        error: "You do not have permission to create products for this store.",
+      });
+    }
+
+    // Validate that store exists
+    const store = await prisma.store.findUnique({
+      where: { id: body.storeId },
+    });
+
+    if (!store) {
+      return reply.code(404).send({ error: "Store not found" });
+    }
+
+    console.log("\n\nCreating product for store:", body.storeId, "\n\n");
+
+    const created = await prisma.product.create({
+      data: {
+        sku: body.sku,
+        title: body.title,
+        slug: body.slug,
+        description: body.description ?? null,
+        features: body.features ?? null,
+        note: body.note ?? null,
+        priceCents: body.priceCents,
+        previousPriceCents: body.previousPriceCents ?? null,
+        currency: body.currency,
+        stock: body.stock,
+        active: true,
+        featured: body.featured ?? false,
+
+        thumbnailUrl: body.thumbnailUrl ?? null,
+        galleryUrls: body.galleryUrls,
+        videoUrl: body.videoUrl ?? null,
+        videoPosterUrl: body.videoPosterUrl ?? null,
+
+        optionsJson: body.optionsJson,
+        images: body.galleryUrls,
+
+        // Correct store connection
+        storeId: body.storeId,
+
+        // categories linking
+        categories:
+          (body.categoryIds ?? []).length > 0
+            ? {
+                create: body.categoryIds.map((catId) => ({
+                  category: {
+                    connectOrCreate: {
+                      where: { id: catId },
+                      create: {
+                        title: catId,
+                        slug: catId.toLowerCase(),
+                      },
+                    },
+                  },
+                })),
+              }
+            : undefined,
+      },
+    });
+
+    return reply.code(201).send(created);
+  }
+);
+
 
   // Update product (admin only)
   app.put(
