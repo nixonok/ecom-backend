@@ -196,54 +196,87 @@ app.post(
   }
 );
 
-
   // Update product (admin only)
   app.put(
-    '/products/:id',
+    "/products/:id",
     { preHandler: (app as any).admin },
     async (req, reply) => {
-      const id = (req.params as any).id as string
-      const body = productUpdateDto.parse(req.body)
+      const id = (req.params as any).id as string;
 
-      const updated = await prisma.product.update({
-        where: { id },
-        data: {
-          ...(body.sku && { sku: body.sku }),
-          ...(body.title && { title: body.title }),
-          ...(body.slug && { slug: body.slug }),
-          description:
-            body.description !== undefined ? body.description : undefined,
-          features: body.features !== undefined ? body.features : undefined,
-          note: body.note !== undefined ? body.note : undefined,
-          priceCents:
-            body.priceCents !== undefined ? body.priceCents : undefined,
+      // parse body as partial product (includes `categoryIds?`)
+      const body = productUpdateDto.parse(req.body);
 
-          previousPriceCents:
-            body.previousPriceCents !== undefined
-              ? body.previousPriceCents
-              : undefined,
+      // pull categoryIds out so we can handle relation separately
+      const { categoryIds, ...rest } = body;
 
-          currency: body.currency,
-          stock: body.stock,
-          featured: body.featured !== undefined ? body.featured : undefined,
-          thumbnailUrl:
-            body.thumbnailUrl !== undefined ? body.thumbnailUrl : undefined,
-          galleryUrls:
-            body.galleryUrls !== undefined ? body.galleryUrls : undefined,
-          videoUrl: body.videoUrl !== undefined ? body.videoUrl : undefined,
-          videoPosterUrl:
-            body.videoPosterUrl !== undefined ? body.videoPosterUrl : undefined,
-          optionsJson:
-            body.optionsJson !== undefined ? body.optionsJson : undefined,
-          images: body.galleryUrls !== undefined ? body.galleryUrls : undefined
-          // Note: updating categories is more complex (disconnect + reconnect),
-          // you can add that later if needed.
+      const updated = await prisma.$transaction(async (tx) => {
+        // 1) Update the base product fields
+        const product = await tx.product.update({
+          where: { id },
+          data: {
+            ...(rest.sku !== undefined && { sku: rest.sku }),
+            ...(rest.title !== undefined && { title: rest.title }),
+            ...(rest.slug !== undefined && { slug: rest.slug }),
+            description:
+              rest.description !== undefined ? rest.description : undefined,
+            features:
+              rest.features !== undefined ? rest.features : undefined,
+            note: rest.note !== undefined ? rest.note : undefined,
+            priceCents:
+              rest.priceCents !== undefined ? rest.priceCents : undefined,
+            previousPriceCents:
+              rest.previousPriceCents !== undefined
+                ? rest.previousPriceCents
+                : undefined,
+            currency: rest.currency !== undefined ? rest.currency : undefined,
+            stock: rest.stock !== undefined ? rest.stock : undefined,
+            featured:
+              rest.featured !== undefined ? rest.featured : undefined,
+            thumbnailUrl:
+              rest.thumbnailUrl !== undefined
+                ? rest.thumbnailUrl
+                : undefined,
+            galleryUrls:
+              rest.galleryUrls !== undefined ? rest.galleryUrls : undefined,
+            videoUrl:
+              rest.videoUrl !== undefined ? rest.videoUrl : undefined,
+            videoPosterUrl:
+              rest.videoPosterUrl !== undefined
+                ? rest.videoPosterUrl
+                : undefined,
+            optionsJson:
+              rest.optionsJson !== undefined ? rest.optionsJson : undefined,
+            images:
+              rest.galleryUrls !== undefined ? rest.galleryUrls : undefined,
+            // ⚠️ we intentionally do NOT allow storeId changes here
+          },
+        });
+
+        // 2) If categoryIds was sent, update the join table
+        if (categoryIds !== undefined) {
+          // a) remove all existing links for this product
+          await tx.productCategory.deleteMany({
+            where: { productId: id },
+          });
+
+          // b) re-insert the new set of category links
+          if (categoryIds.length > 0) {
+            await tx.productCategory.createMany({
+              data: categoryIds.map((categoryId) => ({
+                productId: id,
+                categoryId,
+              })),
+            });
+          }
         }
-      })
 
-      return reply.send(updated)
+        return product;
+      });
+
+      return reply.send(updated);
     }
-  )
+  );
+
 
   // Delete product (admin only)
   // app.delete(
