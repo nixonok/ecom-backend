@@ -17,8 +17,9 @@ export default async function uploadsRoutes(app: FastifyInstance) {
       const safeName = String(fileName).replace(/[^a-zA-Z0-9.\-_]/g, '_');
 
       // Who is uploading?
-      const user = (req as any).user as { id?: string; email?: string } | undefined;
-      const adminSegment = user?.id ? `admins/${user.id}/` : 'admins/unknown/';
+      const user = (req as any).user as { id?: string; email?: string; storeId?: string } | undefined;
+
+      const adminSegment = user?.storeId ? `shops/${user.storeId}/` : 'shops/unknown/';
 
       // Folder from client, e.g. "products/my-product-slug/images"
       const baseFolder = folder
