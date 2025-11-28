@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../utils/prisma'
 import { pageParams } from '../utils/pagination'
+import { deleteObjectByUrl, deleteObjectsByUrls } from '../utils/s3util'
 
 /* ---------- Zod types matching dashboard ---------- */
 
@@ -11,12 +12,12 @@ const productOptionValueDto = z.object({
   imageUrl: z.string().url().nullable().optional(),
   // imageFile never reaches backend
   priceDelta: z.number().nullable().optional(),
-  stock: z.number().nullable().optional()
+  stock: z.number().nullable().optional(),
 })
 
 const productOptionDto = z.object({
   name: z.string(),
-  values: z.array(productOptionValueDto)
+  values: z.array(productOptionValueDto),
 })
 
 const productDto = z.object({
@@ -24,13 +25,19 @@ const productDto = z.object({
   title: z.string().min(1),
   slug: z.string().min(1),
   description: z.string().optional().nullable(),
-  features: z.string().optional().nullable(),
-  note: z.string().optional().nullable(),
   priceCents: z.number().int().nonnegative(),
   previousPriceCents: z.number().int().nonnegative().optional().nullable(),
-  currency: z.string().default('USD'),
+
+  // extra fields in schema
+  purchasePriceCents: z.number().int().nonnegative().optional().nullable(),
+  pageView: z.number().int().nonnegative().optional().nullable(),
+  inCart: z.number().int().nonnegative().optional().nullable(),
+  totalUnitsSold: z.number().int().nonnegative().optional().nullable(),
+  totalRevenueCents: z.number().int().nonnegative().optional().nullable(),
+
+  currency: z.string().default('BDT'),
   stock: z.number().int().nonnegative().default(0),
-  featured: z.boolean().default(true),
+  featured: z.boolean().default(false),
 
   // media from dashboard
   thumbnailUrl: z.string().url().optional().nullable(),
@@ -38,13 +45,14 @@ const productDto = z.object({
   videoUrl: z.string().url().optional().nullable(),
   videoPosterUrl: z.string().url().optional().nullable(),
 
-  // options JSON from dashboard: ProductOption[]
+  features: z.string().optional().nullable(),
+  note: z.string().optional().nullable(),
   optionsJson: z.array(productOptionDto).optional().default([]),
 
-  // categories from dashboard (IDs or slugs)
+  // categories from dashboard (IDs)
   categoryIds: z.array(z.string()).optional().default([]),
 
-    // Required now
+  // store
   storeId: z.string().min(1),
 })
 
@@ -53,16 +61,17 @@ const productUpdateDto = productDto.partial()
 
 /**
  * Assumes admin auth preHandler decorates request with:
- *   request.user = { id: string; role: "ADMIN" | "STAFF"; storeId: string | null }
+ *   request.user = { id: string; role: string; storeId: string }
  */
 type AdminRequest = FastifyRequest & {
-  user?: { id: string; role: string; storeId: string}
+  user?: { id: string; role: string; storeId: string }
 }
 
-export default async function productRoutes (app: FastifyInstance) {
-  // List + search products (admin list)
+export default async function productsRoutes(app: FastifyInstance) {
+  /* ---------- List products with pagination & search ---------- */
   app.get('/products', async (req, reply) => {
-    const { limit, skip } = pageParams(req.query as any)
+    const { skip, take } = pageParams(req)
+
     const qRaw = (req.query as any).q
     const q = typeof qRaw === 'string' ? qRaw.trim() : qRaw?.toString().trim()
 
@@ -71,223 +80,254 @@ export default async function productRoutes (app: FastifyInstance) {
           OR: [
             { title: { contains: q, mode: 'insensitive' } },
             { sku: { contains: q, mode: 'insensitive' } },
-            { slug: { contains: q, mode: 'insensitive' } }
-          ]
+            { slug: { contains: q, mode: 'insensitive' } },
+          ],
         }
       : {}
 
+    const findManyArgs: any = {
+      where,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        // Product.categories -> ProductCategory[]
+        categories: {
+          include: {
+            category: true, // Category model
+          },
+        },
+        store: true,
+      },
+    }
+    if (typeof skip === 'number') findManyArgs.skip = skip
+    if (typeof take === 'number') findManyArgs.take = take
+
     const [items, total] = await Promise.all([
-      prisma.product.findMany({
-        where,
-        take: limit,
-        skip,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          categories: {
-            include: {
-              category: true
-            }
-          }
-        }
-      }),
-      prisma.product.count({ where })
+      prisma.product.findMany(findManyArgs),
+      prisma.product.count({ where }),
     ])
 
-    return reply.send({ total, items })
+    return reply.send({
+      items,
+      total,
+      pageSize: take ?? items.length,
+      page: skip && take ? skip / take + 1 : 1,
+    })
   })
 
-  // Single product
+  /* ---------- Get single product ---------- */
   app.get('/products/:id', async (req, reply) => {
     const id = (req.params as any).id as string
-    const item = await prisma.product.findUnique({
+
+    const product = await prisma.product.findUnique({
       where: { id },
       include: {
         categories: {
-          include: {
-            category: true
-          }
-        }
-      }
+          include: { category: true },
+        },
+        store: true,
+      },
     })
-    if (!item) return reply.code(404).send({ error: 'Not found' })
-    return reply.send(item)
+
+    if (!product) {
+      return reply.code(404).send({ error: 'Product not found' })
+    }
+
+    return reply.send(product)
   })
 
-  // Create product (admin only)
-app.post(
-  '/products',
-  { preHandler: (app as any).admin },
-  async (req, reply) => {
-    const adminReq = req as AdminRequest;
-    const user = adminReq.user;
-
-    const body = productDto.parse(req.body);
-
-    // REQUIRED: storeId must come from frontend DTO
-    if (!body.storeId) {
-      return reply.code(400).send({ error: "storeId is required" });
-    }
-
-    // Security: ensure this admin owns the store
-    if (!user?.storeId || user.storeId !== body.storeId) {
-      return reply.code(403).send({
-        error: "You do not have permission to create products for this store.",
-      });
-    }
-
-    // Validate that store exists
-    const store = await prisma.store.findUnique({
-      where: { id: body.storeId },
-    });
-
-    if (!store) {
-      return reply.code(404).send({ error: "Store not found" });
-    }
-
-    console.log("\n\nCreating product for store:", body.storeId, "\n\n");
-
-    const created = await prisma.product.create({
-      data: {
-        sku: body.sku,
-        title: body.title,
-        slug: body.slug,
-        description: body.description ?? null,
-        features: body.features ?? null,
-        note: body.note ?? null,
-        priceCents: body.priceCents,
-        previousPriceCents: body.previousPriceCents ?? null,
-        currency: body.currency,
-        stock: body.stock,
-        active: true,
-        featured: body.featured ?? false,
-
-        thumbnailUrl: body.thumbnailUrl ?? null,
-        galleryUrls: body.galleryUrls,
-        videoUrl: body.videoUrl ?? null,
-        videoPosterUrl: body.videoPosterUrl ?? null,
-
-        optionsJson: body.optionsJson,
-        images: body.galleryUrls,
-
-        // Correct store connection
-        storeId: body.storeId,
-
-        // categories linking
-        categories:
-          (body.categoryIds ?? []).length > 0
-            ? {
-                create: body.categoryIds.map((catId) => ({
-                  category: {
-                    connectOrCreate: {
-                      where: { id: catId },
-                      create: {
-                        title: catId,
-                        slug: catId.toLowerCase(),
-                      },
-                    },
-                  },
-                })),
-              }
-            : undefined,
-      },
-    });
-
-    return reply.code(201).send(created);
-  }
-);
-
-  // Update product (admin only)
-  app.put(
-    "/products/:id",
+  /* ---------- Create product (admin only) ---------- */
+  app.post(
+    '/products',
     { preHandler: (app as any).admin },
-    async (req, reply) => {
-      const id = (req.params as any).id as string;
+    async (req: AdminRequest, reply) => {
+      const body = productDto.parse(req.body)
 
-      // parse body as partial product (includes `categoryIds?`)
-      const body = productUpdateDto.parse(req.body);
+      const user = req.user
+      if (!user) {
+        return reply.code(401).send({ error: 'Unauthorized' })
+      }
 
-      // pull categoryIds out so we can handle relation separately
-      const { categoryIds, ...rest } = body;
+      // Security: ensure this admin owns the store
+      if (!user.storeId || user.storeId !== body.storeId) {
+        return reply.code(403).send({
+          error: 'You do not have permission to create products for this store.',
+        })
+      }
 
-      const updated = await prisma.$transaction(async (tx) => {
-        // 1) Update the base product fields
-        const product = await tx.product.update({
-          where: { id },
-          data: {
-            ...(rest.sku !== undefined && { sku: rest.sku }),
-            ...(rest.title !== undefined && { title: rest.title }),
-            ...(rest.slug !== undefined && { slug: rest.slug }),
-            description:
-              rest.description !== undefined ? rest.description : undefined,
-            features:
-              rest.features !== undefined ? rest.features : undefined,
-            note: rest.note !== undefined ? rest.note : undefined,
-            priceCents:
-              rest.priceCents !== undefined ? rest.priceCents : undefined,
-            previousPriceCents:
-              rest.previousPriceCents !== undefined
-                ? rest.previousPriceCents
-                : undefined,
-            currency: rest.currency !== undefined ? rest.currency : undefined,
-            stock: rest.stock !== undefined ? rest.stock : undefined,
-            featured:
-              rest.featured !== undefined ? rest.featured : undefined,
-            thumbnailUrl:
-              rest.thumbnailUrl !== undefined
-                ? rest.thumbnailUrl
-                : undefined,
-            galleryUrls:
-              rest.galleryUrls !== undefined ? rest.galleryUrls : undefined,
-            videoUrl:
-              rest.videoUrl !== undefined ? rest.videoUrl : undefined,
-            videoPosterUrl:
-              rest.videoPosterUrl !== undefined
-                ? rest.videoPosterUrl
-                : undefined,
-            optionsJson:
-              rest.optionsJson !== undefined ? rest.optionsJson : undefined,
-            images:
-              rest.galleryUrls !== undefined ? rest.galleryUrls : undefined,
-            // ⚠️ we intentionally do NOT allow storeId changes here
-          },
-        });
+      // Validate that store exists
+      const store = await prisma.store.findUnique({
+        where: { id: body.storeId },
+      })
 
-        // 2) If categoryIds was sent, update the join table
-        if (categoryIds !== undefined) {
-          // a) remove all existing links for this product
-          await tx.productCategory.deleteMany({
-            where: { productId: id },
-          });
+      if (!store) {
+        return reply.code(404).send({ error: 'Store not found' })
+      }
 
-          // b) re-insert the new set of category links
-          if (categoryIds.length > 0) {
+      // Check for unique SKU within store
+      const skuExists = await prisma.product.findFirst({
+        where: {
+          sku: body.sku,
+          storeId: body.storeId,
+        },
+      })
+
+      if (skuExists) {
+        return reply.code(409).send({
+          error: 'SKU is already used by another product in this store.',
+        })
+      }
+
+      try {
+        const created = await prisma.$transaction(async (tx) => {
+          const product = await tx.product.create({
+            data: {
+              sku: body.sku,
+              title: body.title,
+              slug: body.slug,
+              description: body.description ?? null,
+              priceCents: body.priceCents,
+              previousPriceCents: body.previousPriceCents ?? null,
+
+              purchasePriceCents: body.purchasePriceCents ?? 0,
+              pageView: body.pageView ?? 0,
+              inCart: body.inCart ?? 0,
+              totalUnitsSold: body.totalUnitsSold ?? 0,
+              totalRevenueCents: body.totalRevenueCents ?? 0,
+
+              currency: body.currency,
+              stock: body.stock,
+              featured: body.featured,
+              thumbnailUrl: body.thumbnailUrl ?? null,
+              galleryUrls: body.galleryUrls ?? [],
+              // 👇 keep required JSON `images` in sync with galleryUrls
+              images: body.galleryUrls ?? [],
+              videoUrl: body.videoUrl ?? null,
+              videoPosterUrl: body.videoPosterUrl ?? null,
+              features: body.features ?? null,
+              note: body.note ?? null,
+              optionsJson: body.optionsJson ?? [],
+              storeId: body.storeId,
+            },
+          })
+
+          if (body.categoryIds && body.categoryIds.length > 0) {
             await tx.productCategory.createMany({
-              data: categoryIds.map((categoryId) => ({
-                productId: id,
+              data: body.categoryIds.map((categoryId) => ({
+                productId: product.id,
                 categoryId,
               })),
-            });
+            })
           }
+
+          return tx.product.findUnique({
+            where: { id: product.id },
+            include: {
+              categories: { include: { category: true } },
+              store: true,
+            },
+          })
+        })
+
+        return reply.code(201).send(created)
+      } catch (err) {
+        console.error('POST /products failed', err)
+        return reply.code(500).send({ error: 'Create failed' })
+      }
+    }
+  )
+
+  /* ---------- Update product (admin only) ---------- */
+  app.put(
+    '/products/:id',
+    { preHandler: (app as any).admin },
+    async (req: AdminRequest, reply) => {
+      const id = (req.params as any).id as string
+      const body = productUpdateDto.parse(req.body)
+
+      const user = req.user
+      if (!user) {
+        return reply.code(401).send({ error: 'Unauthorized' })
+      }
+
+      try {
+        const updated = await prisma.$transaction(async (tx) => {
+          const existing = await tx.product.findUnique({
+            where: { id },
+          })
+
+          if (!existing) {
+            throw new Error('NOT_FOUND')
+          }
+
+          // Security: ensure the admin owns this store
+          if (!user.storeId || user.storeId !== existing.storeId) {
+            throw new Error('FORBIDDEN')
+          }
+
+          const data: any = { ...body }
+
+          // Ensure we don't send categoryIds directly to Product
+          if (data.categoryIds) {
+            delete data.categoryIds
+          }
+
+          // Keep JSON fields in sync
+          if (Array.isArray(body.galleryUrls)) {
+            data.galleryUrls = body.galleryUrls
+            data.images = body.galleryUrls
+          }
+
+          const product = await tx.product.update({
+            where: { id },
+            data,
+          })
+
+          // Replace categories if new categoryIds provided
+          if (body.categoryIds) {
+            // Delete existing links
+            await tx.productCategory.deleteMany({
+              where: { productId: id },
+            })
+
+            if (body.categoryIds.length > 0) {
+              await tx.productCategory.createMany({
+                data: body.categoryIds.map((categoryId) => ({
+                  productId: id,
+                  categoryId,
+                })),
+              })
+            }
+          }
+
+          return tx.product.findUnique({
+            where: { id: product.id },
+            include: {
+              categories: { include: { category: true } },
+              store: true,
+            },
+          })
+        })
+
+        return reply.send(updated)
+      } catch (err: any) {
+        console.error('PUT /products/:id failed', id, err)
+
+        if (err.message === 'NOT_FOUND') {
+          return reply.code(404).send({ error: 'Product not found' })
         }
 
-        return product;
-      });
+        if (err.message === 'FORBIDDEN') {
+          return reply
+            .code(403)
+            .send({ error: 'You do not own this product/store.' })
+        }
 
-      return reply.send(updated);
+        return reply.code(500).send({ error: 'Update failed' })
+      }
     }
-  );
+  )
 
-
-  // Delete product (admin only)
-  // app.delete(
-  //   "/products/:id",
-  //   { preHandler: (app as any).admin },
-  //   async (req, reply) => {
-  //     const id = (req.params as any).id as string;
-  //     await prisma.product.delete({ where: { id } });
-  //     return reply.code(204).send();
-  //   }
-  // );
+  /* ---------- Delete product (admin only) ---------- */
   app.delete(
     '/products/:id',
     { preHandler: (app as any).admin },
@@ -295,6 +335,49 @@ app.post(
       const id = (req.params as any).id as string
 
       try {
+        // Load product media URLs before deleting
+        const product = await prisma.product.findUnique({
+          where: { id },
+          select: {
+            thumbnailUrl: true,
+            galleryUrls: true,
+            videoUrl: true,
+            videoPosterUrl: true,
+          },
+        })
+
+        if (!product) {
+          return reply.code(404).send({ error: 'Product not found' })
+        }
+
+        const urlsToDelete: string[] = []
+
+        if (product.thumbnailUrl) {
+          urlsToDelete.push(product.thumbnailUrl)
+        }
+
+        if (Array.isArray(product.galleryUrls)) {
+          urlsToDelete.push(...(product.galleryUrls as string[]))
+        }
+
+        if (product.videoPosterUrl) {
+          urlsToDelete.push(product.videoPosterUrl)
+        }
+
+        if (product.videoUrl) {
+          urlsToDelete.push(product.videoUrl)
+        }
+
+        if (urlsToDelete.length > 0) {
+          try {
+            await deleteObjectsByUrls(urlsToDelete)
+          } catch (err) {
+            // Log but do not block DB deletion
+            console.error('Failed to delete S3 media for product', id, err)
+          }
+        }
+
+        // ProductCategory rows will cascade delete (onDelete: Cascade on product)
         await prisma.product.delete({ where: { id } })
         return reply.code(204).send()
       } catch (err) {
@@ -304,14 +387,73 @@ app.post(
     }
   )
 
-  // Update product active/draft status (admin only)
+  // ---------- Delete a single gallery image by URL and update DB ----------
+  app.delete(
+    '/products/:id/images',
+    { preHandler: (app as any).admin },
+    async (req, reply) => {
+      const id = (req.params as any).id as string
+      const { imageUrl } = req.body as { imageUrl?: string }
+
+      if (!imageUrl) {
+        return reply.code(400).send({ error: 'imageUrl is required' })
+      }
+
+      try {
+        const product = await prisma.product.findUnique({
+          where: { id },
+          select: { galleryUrls: true },
+        })
+
+        if (!product) {
+          return reply.code(404).send({ error: 'Product not found' })
+        }
+
+        const existingGallery = Array.isArray(product.galleryUrls)
+          ? (product.galleryUrls as string[])
+          : []
+
+        const updatedGallery = existingGallery.filter((url) => url !== imageUrl)
+
+        // Delete from S3 (best-effort)
+        try {
+          await deleteObjectByUrl(imageUrl)
+        } catch (err) {
+          console.error(
+            'Failed to delete single S3 image for product',
+            id,
+            imageUrl,
+            err
+          )
+        }
+
+        const updated = await prisma.product.update({
+          where: { id },
+          data: {
+            galleryUrls: updatedGallery,
+            images: updatedGallery,
+          },
+          include: {
+            categories: { include: { category: true } },
+            store: true,
+          },
+        })
+
+        return reply.send(updated)
+      } catch (err) {
+        console.error('DELETE /products/:id/images failed', id, err)
+        return reply.code(500).send({ error: 'Failed to delete image' })
+      }
+    }
+  )
+
+  /* ---------- Update product active/draft status (admin only) ---------- */
   app.patch(
     '/products/:id/status',
     { preHandler: (app as any).admin },
     async (req, reply) => {
       const id = (req.params as any).id as string
 
-      // Expect body like { active: boolean }
       const body = req.body as any
       const active = typeof body?.active === 'boolean' ? body.active : null
 
@@ -324,7 +466,7 @@ app.post(
       try {
         const updated = await prisma.product.update({
           where: { id },
-          data: { active }
+          data: { active },
         })
 
         return reply.send(updated)

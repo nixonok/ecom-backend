@@ -3,9 +3,9 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_USER: shopadmin
-      POSTGRES_PASSWORD: strongpassword
-      POSTGRES_DB: shophikes
+      POSTGRES_USER: "ecom-admin"
+      POSTGRES_PASSWORD: "shophikes123"
+      POSTGRES_DB: ecom-db
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     ports:
