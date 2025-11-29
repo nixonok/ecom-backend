@@ -164,18 +164,18 @@ export default async function productsRoutes(app: FastifyInstance) {
       }
 
       // Check for unique SKU within store
-      const skuExists = await prisma.product.findFirst({
-        where: {
-          sku: body.sku,
-          storeId: body.storeId,
-        },
-      })
+      // const skuExists = await prisma.product.findFirst({
+      //   where: {
+      //     sku: body.sku,
+      //     storeId: body.storeId,
+      //   },
+      // })
 
-      if (skuExists) {
-        return reply.code(409).send({
-          error: 'SKU is already used by another product in this store.',
-        })
-      }
+      // if (skuExists) {
+      //   return reply.code(409).send({
+      //     error: 'SKU is already used by another product in this store.',
+      //   })
+      // }
 
       try {
         const created = await prisma.$transaction(async (tx) => {
