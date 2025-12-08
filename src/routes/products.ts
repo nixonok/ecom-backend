@@ -12,12 +12,12 @@ const productOptionValueDto = z.object({
   imageUrl: z.string().url().nullable().optional(),
   // imageFile never reaches backend
   priceDelta: z.number().nullable().optional(),
-  stock: z.number().nullable().optional(),
+  stock: z.number().nullable().optional()
 })
 
 const productOptionDto = z.object({
   name: z.string(),
-  values: z.array(productOptionValueDto),
+  values: z.array(productOptionValueDto)
 })
 
 const productDto = z.object({
@@ -53,7 +53,7 @@ const productDto = z.object({
   categoryIds: z.array(z.string()).optional().default([]),
 
   // store
-  storeId: z.string().min(1),
+  storeId: z.string().min(1)
 })
 
 // for partial updates
@@ -67,24 +67,136 @@ type AdminRequest = FastifyRequest & {
   user?: { id: string; role: string; storeId: string }
 }
 
-export default async function productsRoutes(app: FastifyInstance) {
+export default async function productsRoutes (app: FastifyInstance) {
   /* ---------- List products with pagination & search ---------- */
+  // app.get('/products', async (req, reply) => {
+  //   const { skip, take } = pageParams(req)
+
+  //   const qRaw = (req.query as any).q
+  //   const q = typeof qRaw === 'string' ? qRaw.trim() : qRaw?.toString().trim()
+
+  //   const where: any = q
+  //     ? {
+  //         OR: [
+  //           { title: { contains: q, mode: 'insensitive' } },
+  //           { sku: { contains: q, mode: 'insensitive' } },
+  //           { slug: { contains: q, mode: 'insensitive' } }
+  //         ]
+  //       }
+  //     : {}
+
+  //   const findManyArgs: any = {
+  //     where,
+  //     orderBy: { createdAt: 'desc' },
+  //     include: {
+  //       // Product.categories -> ProductCategory[]
+  //       categories: {
+  //         include: {
+  //           category: true // Category model
+  //         }
+  //       },
+  //       store: true
+  //     }
+  //   }
+  //   if (typeof skip === 'number') findManyArgs.skip = skip
+  //   if (typeof take === 'number') findManyArgs.take = take
+
+  //   const [items, total] = await Promise.all([
+  //     prisma.product.findMany(findManyArgs),
+  //     prisma.product.count({ where })
+  //   ])
+
+  //   return reply.send({
+  //     items,
+  //     total,
+  //     pageSize: take ?? items.length,
+  //     page: skip && take ? skip / take + 1 : 1
+  //   })
+  // })
+
   app.get('/products', async (req, reply) => {
     const { skip, take } = pageParams(req)
+    const query = req.query as any
 
-    const qRaw = (req.query as any).q
+    /** ------------------ Text search (existing behavior) ------------------ */
+    const qRaw = query.q
     const q = typeof qRaw === 'string' ? qRaw.trim() : qRaw?.toString().trim()
 
-    const where: any = q
-      ? {
-          OR: [
-            { title: { contains: q, mode: 'insensitive' } },
-            { sku: { contains: q, mode: 'insensitive' } },
-            { slug: { contains: q, mode: 'insensitive' } },
-          ],
-        }
-      : {}
+    const where: any = {}
 
+    if (q) {
+      where.OR = [
+        { title: { contains: q, mode: 'insensitive' } },
+        { sku: { contains: q, mode: 'insensitive' } },
+        { slug: { contains: q, mode: 'insensitive' } }
+      ]
+    }
+
+    /** ------------------ Category filter (optional) ------------------ */
+    // Accepts:
+    //   ?category=smart-watch
+    //   ?category=watch&category=bottle   (multiple)
+    const categoryRaw = query.category
+    let categorySlugs: string[] | undefined
+
+    if (Array.isArray(categoryRaw)) {
+      categorySlugs = categoryRaw
+        .map((c: any) =>
+          typeof c === 'string' ? c.trim() : c?.toString().trim()
+        )
+        .filter(Boolean)
+    } else if (typeof categoryRaw === 'string' && categoryRaw.trim()) {
+      categorySlugs = [categoryRaw.trim()]
+    }
+
+    if (categorySlugs && categorySlugs.length > 0) {
+      // Product.categories -> ProductCategory[] -> Category
+      where.categories = {
+        some: {
+          category: {
+            slug: {
+              in: categorySlugs
+            }
+          }
+        }
+      }
+    }
+
+    /** ------------------ Price filter (optional) ------------------ */
+    // Frontend sends minPrice/maxPrice in "taka" (same as Sanity price).
+    // We convert to cents to match priceCents in DB.
+    const minRaw = query.minPrice
+    const maxRaw = query.maxPrice
+
+    const minPrice =
+      minRaw != null && minRaw !== ''
+        ? Number(typeof minRaw === 'string' ? minRaw : minRaw.toString())
+        : undefined
+    const maxPrice =
+      maxRaw != null && maxRaw !== ''
+        ? Number(typeof maxRaw === 'string' ? maxRaw : maxRaw.toString())
+        : undefined
+
+    const minPriceCents =
+      typeof minPrice === 'number' && !Number.isNaN(minPrice)
+        ? Math.round(minPrice * 100)
+        : undefined
+    const maxPriceCents =
+      typeof maxPrice === 'number' && !Number.isNaN(maxPrice)
+        ? Math.round(maxPrice * 100)
+        : undefined
+
+    if (minPriceCents != null || maxPriceCents != null) {
+      where.priceCents = {}
+      if (minPriceCents != null) {
+        where.priceCents.gte = minPriceCents
+      }
+      if (maxPriceCents != null) {
+        where.priceCents.lte = maxPriceCents
+      }
+    }
+
+    /** ------------------ Query DB (unchanged shape) ------------------ */
     const findManyArgs: any = {
       where,
       orderBy: { createdAt: 'desc' },
@@ -92,25 +204,26 @@ export default async function productsRoutes(app: FastifyInstance) {
         // Product.categories -> ProductCategory[]
         categories: {
           include: {
-            category: true, // Category model
-          },
+            category: true // Category model
+          }
         },
-        store: true,
-      },
+        store: true
+      }
     }
+
     if (typeof skip === 'number') findManyArgs.skip = skip
     if (typeof take === 'number') findManyArgs.take = take
 
     const [items, total] = await Promise.all([
       prisma.product.findMany(findManyArgs),
-      prisma.product.count({ where }),
+      prisma.product.count({ where })
     ])
 
     return reply.send({
       items,
       total,
       pageSize: take ?? items.length,
-      page: skip && take ? skip / take + 1 : 1,
+      page: skip && take ? skip / take + 1 : 1
     })
   })
 
@@ -122,10 +235,35 @@ export default async function productsRoutes(app: FastifyInstance) {
       where: { id },
       include: {
         categories: {
-          include: { category: true },
+          include: { category: true }
         },
-        store: true,
-      },
+        store: true
+      }
+    })
+
+    if (!product) {
+      return reply.code(404).send({ error: 'Product not found' })
+    }
+
+    return reply.send(product)
+  })
+
+  /* ---------- Get single product by slug (storefront) ---------- */
+  app.get('/products/slug/:slug', async (req, reply) => {
+    const { slug } = req.params as any
+
+    if (!slug || typeof slug !== 'string') {
+      return reply.code(400).send({ error: 'Invalid slug' })
+    }
+
+    const product = await prisma.product.findFirst({
+      where: { slug },
+      include: {
+        categories: {
+          include: { category: true }
+        },
+        store: true
+      }
     })
 
     if (!product) {
@@ -150,13 +288,13 @@ export default async function productsRoutes(app: FastifyInstance) {
       // Security: ensure this admin owns the store
       if (!user.storeId || user.storeId !== body.storeId) {
         return reply.code(403).send({
-          error: 'You do not have permission to create products for this store.',
+          error: 'You do not have permission to create products for this store.'
         })
       }
 
       // Validate that store exists
       const store = await prisma.store.findUnique({
-        where: { id: body.storeId },
+        where: { id: body.storeId }
       })
 
       if (!store) {
@@ -178,7 +316,7 @@ export default async function productsRoutes(app: FastifyInstance) {
       // }
 
       try {
-        const created = await prisma.$transaction(async (tx) => {
+        const created = await prisma.$transaction(async tx => {
           const product = await tx.product.create({
             data: {
               sku: body.sku,
@@ -206,16 +344,16 @@ export default async function productsRoutes(app: FastifyInstance) {
               features: body.features ?? null,
               note: body.note ?? null,
               optionsJson: body.optionsJson ?? [],
-              storeId: body.storeId,
-            },
+              storeId: body.storeId
+            }
           })
 
           if (body.categoryIds && body.categoryIds.length > 0) {
             await tx.productCategory.createMany({
-              data: body.categoryIds.map((categoryId) => ({
+              data: body.categoryIds.map(categoryId => ({
                 productId: product.id,
-                categoryId,
-              })),
+                categoryId
+              }))
             })
           }
 
@@ -223,8 +361,8 @@ export default async function productsRoutes(app: FastifyInstance) {
             where: { id: product.id },
             include: {
               categories: { include: { category: true } },
-              store: true,
-            },
+              store: true
+            }
           })
         })
 
@@ -250,9 +388,9 @@ export default async function productsRoutes(app: FastifyInstance) {
       }
 
       try {
-        const updated = await prisma.$transaction(async (tx) => {
+        const updated = await prisma.$transaction(async tx => {
           const existing = await tx.product.findUnique({
-            where: { id },
+            where: { id }
           })
 
           if (!existing) {
@@ -279,22 +417,22 @@ export default async function productsRoutes(app: FastifyInstance) {
 
           const product = await tx.product.update({
             where: { id },
-            data,
+            data
           })
 
           // Replace categories if new categoryIds provided
           if (body.categoryIds) {
             // Delete existing links
             await tx.productCategory.deleteMany({
-              where: { productId: id },
+              where: { productId: id }
             })
 
             if (body.categoryIds.length > 0) {
               await tx.productCategory.createMany({
-                data: body.categoryIds.map((categoryId) => ({
+                data: body.categoryIds.map(categoryId => ({
                   productId: id,
-                  categoryId,
-                })),
+                  categoryId
+                }))
               })
             }
           }
@@ -303,8 +441,8 @@ export default async function productsRoutes(app: FastifyInstance) {
             where: { id: product.id },
             include: {
               categories: { include: { category: true } },
-              store: true,
-            },
+              store: true
+            }
           })
         })
 
@@ -342,8 +480,8 @@ export default async function productsRoutes(app: FastifyInstance) {
             thumbnailUrl: true,
             galleryUrls: true,
             videoUrl: true,
-            videoPosterUrl: true,
-          },
+            videoPosterUrl: true
+          }
         })
 
         if (!product) {
@@ -402,7 +540,7 @@ export default async function productsRoutes(app: FastifyInstance) {
       try {
         const product = await prisma.product.findUnique({
           where: { id },
-          select: { galleryUrls: true },
+          select: { galleryUrls: true }
         })
 
         if (!product) {
@@ -413,7 +551,7 @@ export default async function productsRoutes(app: FastifyInstance) {
           ? (product.galleryUrls as string[])
           : []
 
-        const updatedGallery = existingGallery.filter((url) => url !== imageUrl)
+        const updatedGallery = existingGallery.filter(url => url !== imageUrl)
 
         // Delete from S3 (best-effort)
         try {
@@ -431,12 +569,12 @@ export default async function productsRoutes(app: FastifyInstance) {
           where: { id },
           data: {
             galleryUrls: updatedGallery,
-            images: updatedGallery,
+            images: updatedGallery
           },
           include: {
             categories: { include: { category: true } },
-            store: true,
-          },
+            store: true
+          }
         })
 
         return reply.send(updated)
@@ -466,7 +604,7 @@ export default async function productsRoutes(app: FastifyInstance) {
       try {
         const updated = await prisma.product.update({
           where: { id },
-          data: { active },
+          data: { active }
         })
 
         return reply.send(updated)
