@@ -149,6 +149,7 @@ export default async function orderRoutes (app: FastifyInstance) {
     }
   )
 
+  
   /* ---------- CREATE ORDER ---------- */
   app.post(
     '/orders',
