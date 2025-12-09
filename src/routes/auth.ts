@@ -25,22 +25,21 @@ export default async function authRoutes(app: FastifyInstance) {
         return reply.code(401).send({ error: 'Invalid credentials' })
       }
 
-      // 🔥 FIX: Add storeId into the signed JWT
-      const token = (app as any).jwt.sign(
-        {
-          id: user.id,
-          role: user.role,
-          email: user.email,
-          storeId: user.storeId,    // <<----- REQUIRED
-        },
-        { expiresIn: '7d' }
-      )
-
-      // Return token + storeId (optional but fine)
-      return reply.send({
-        token,
+      const payload = {
+        id: user.id,
         role: user.role,
-        storeId: user.storeId
+        email: user.email,
+        storeId: user.storeId,
+      }
+
+      const token = (app as any).jwt.sign(payload, { expiresIn: '7d' })
+
+      return reply.send({
+        token,     
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        storeId: user.storeId,
       })
     }
   )
