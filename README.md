@@ -38,3 +38,59 @@ Seed creates `admin@shophikes.com` with password `ChangeThisPwd!` (change it!).
 
 ## NextAuth wiring (frontend)
 Call `/auth/exchange` from NextAuth JWT callback, store `backendToken` in session, then call backend APIs with `Authorization: Bearer <backendToken>`.
+
+```
+ecom-backend
+├─ docker-compose.yml
+├─ package.json
+├─ pnpm-lock.yaml
+├─ pnpm-workspace.yaml
+├─ prisma
+│  ├─ migrations
+│  │  ├─ 20251112112210_pnpm_run_seed
+│  │  │  └─ migration.sql
+│  │  ├─ 20251120031212_add_store_and_product_media
+│  │  │  └─ migration.sql
+│  │  ├─ 20251120052112_remove_unique_sku
+│  │  │  └─ migration.sql
+│  │  ├─ 20251123051447_new11
+│  │  │  └─ migration.sql
+│  │  ├─ 20251123175431_delete_product
+│  │  │  └─ migration.sql
+│  │  ├─ 20251124005151_featured
+│  │  │  └─ migration.sql
+│  │  ├─ 20251124005832_add_product_featured
+│  │  │  └─ migration.sql
+│  │  ├─ 20251124190249_align_order_item_schema
+│  │  │  └─ migration.sql
+│  │  ├─ 20251125005954_add_customer_note_to_order
+│  │  │  └─ migration.sql
+│  │  ├─ 20251125012601_add_payment_method_to_order
+│  │  │  └─ migration.sql
+│  │  ├─ 20251210073043_add_category_store
+│  │  │  └─ migration.sql
+│  │  └─ migration_lock.toml
+│  ├─ schema.prisma
+│  └─ seed.ts
+├─ prisma.config.ts
+├─ README.md
+├─ src
+│  ├─ plugins
+│  │  ├─ auth.ts
+│  │  └─ swagger.ts
+│  ├─ routes
+│  │  ├─ auth.ts
+│  │  ├─ categories.ts
+│  │  ├─ dashboard.ts
+│  │  ├─ nextauth-exchange.ts
+│  │  ├─ orders.ts
+│  │  ├─ products.ts
+│  │  └─ uploads.ts
+│  ├─ server.ts
+│  └─ utils
+│     ├─ pagination.ts
+│     ├─ prisma.ts
+│     └─ s3util.ts
+└─ tsconfig.json
+
+```

@@ -17,6 +17,8 @@ model Store {
   products  Product[]
   users     User[]
 
+  categories Category[]
+
   @@index([slug])
 }
 
@@ -32,51 +34,71 @@ model User {
 }
 
 model Product {
-  id                 String  @id @default(cuid())
-  sku                String
-  title              String
-  slug               String  @unique
+  id String @id @default(cuid())
+
+  // Tenant ownership
+  storeId String
+  store   Store  @relation(fields: [storeId], references: [id])
+
+  // Business identity
+  sku   String
+  title String
+  slug  String
+
   description        String?
   priceCents         Int
   previousPriceCents Int?
 
-  purchasePriceCents Int? @default(0)
-  pageView           Int? @default(0)
-  inCart             Int? @default(0)
-  totalUnitsSold     Int  @default(0)
-  totalRevenueCents  Int  @default(0)
+  // Analytics / stats (non-null with sane defaults)
+  purchasePriceCents Int @default(0)
+  pageView           Int @default(0)
+  inCart             Int @default(0)
+  totalUnitsSold     Int @default(0)
+  totalRevenueCents  Int @default(0)
 
-  currency       String            @default("BDT")
-  stock          Int               @default(0)
-  images         Json
-  active         Boolean           @default(true)
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  currency String @default("BDT")
+  stock    Int    @default(0)
+
+  images      Json // required: matches your current usage
+  galleryUrls Json?
+  optionsJson Json?
+
+  active         Boolean @default(true)
+  featured       Boolean @default(false)
   features       String?
-  galleryUrls    Json?
   note           String?
-  optionsJson    Json?
-  storeId        String
-  featured       Boolean           @default(false)
   thumbnailUrl   String?
   videoPosterUrl String?
   videoUrl       String?
-  OrderItem      OrderItem[]
-  store          Store             @relation(fields: [storeId], references: [id])
-  categories     ProductCategory[]
 
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  OrderItem  OrderItem[]
+  categories ProductCategory[]
+
+  // Useful indexes & uniqueness in a multi-tenant setup
+  @@unique([storeId, slug]) // slug unique per store, not globally
   @@index([storeId, active, createdAt])
 }
 
 model Category {
-  id          String            @id @default(cuid())
+  id          String   @id @default(cuid())
   title       String
-  slug        String            @unique
+  slug        String
   description String?
   iconUrl     String?
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
-  products    ProductCategory[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Multi-tenant ownership
+  storeId String
+  store   Store  @relation(fields: [storeId], references: [id])
+
+  products ProductCategory[]
+
+  @@unique([storeId, slug])
+  @@index([storeId])
 }
 
 model ProductCategory {
@@ -108,7 +130,7 @@ model Order {
   postalCode    String?
   customerNote  String?
   adminNote     String?
-  status        OrderStatus @default(PENDING)
+  status        OrderStatus   @default(PENDING)
   paymentMethod PaymentMethod @default(COD)
 
   subtotalCents Int
@@ -149,6 +171,7 @@ model OrderItem {
 }
 
 enum Role {
+  SUPER_ADMIN
   ADMIN
   STAFF
   CUSTOMER

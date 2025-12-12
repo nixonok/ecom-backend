@@ -1,9 +1,10 @@
 // src/routes/orders.ts
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../utils/prisma'
 import { pageParams } from '../utils/pagination'
 import { OrderStatus, PaymentMethod } from '@prisma/client'
+import type { Prisma } from '@prisma/client'
 
 /* ---------------------- ZOD DTOs ---------------------- */
 
@@ -16,6 +17,13 @@ const orderItemDto = z.object({
   productImageUrl: z.string().url().nullable().optional()
 })
 
+/**
+ * For SUPER_ADMIN:
+ *   - can optionally pass storeId to create an order for a specific store
+ *
+ * For ADMIN / STAFF:
+ *   - storeId is ignored; we always use req.user.storeId
+ */
 const createOrderDto = z.object({
   orderNumber: z.string().min(1),
   customerName: z.string().min(1),
@@ -23,7 +31,7 @@ const createOrderDto = z.object({
   email: z.string().email().optional().nullable(),
 
   userId: z.string().optional().nullable(),
-  storeId: z.string().min(1),
+  storeId: z.string().min(1).optional(), // used only for SUPER_ADMIN
 
   // Address fields — optional
   streetAddress: z.string().optional().nullable(),
@@ -103,36 +111,70 @@ const storefrontCreateOrderDto = z.object({
 /* ---------------------- ROUTES ---------------------- */
 
 export default async function orderRoutes (app: FastifyInstance) {
-  /* ---------- LIST ORDERS ---------- */
-  app.get('/orders', { preHandler: (app as any).admin }, async (req, reply) => {
-    const { limit, skip } = pageParams(req.query as any)
-    const qStatus = (req.query as any).status as OrderStatus | undefined
-    const where: any = {}
+  /* ---------- LIST ORDERS (admin, multi-tenant) ---------- */
+  app.get(
+    '/orders',
+    { preHandler: app.admin },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const user = req.user
+      if (!user) {
+        return reply.code(401).send({ error: 'Unauthorized' })
+      }
 
-    if (qStatus) where.status = qStatus
+      const { limit, skip } = pageParams(req)
+      const query = req.query as any
+      const qStatus = query.status as OrderStatus | undefined
 
-    const [items, total] = await Promise.all([
-      prisma.order.findMany({
-        where,
-        take: limit,
-        skip,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          items: true,
-          user: { select: { email: true } }
+      const where: Prisma.OrderWhereInput = {}
+
+      // Multi-tenant scoping
+      if (user.role === 'SUPER_ADMIN') {
+        const storeIdQuery =
+          typeof query.storeId === 'string' ? query.storeId.trim() : undefined
+        if (storeIdQuery) {
+          where.storeId = storeIdQuery
         }
-      }),
-      prisma.order.count({ where })
-    ])
+      } else {
+        if (!user.storeId) {
+          return reply
+            .code(400)
+            .send({ error: 'This user is not associated with a store.' })
+        }
+        where.storeId = user.storeId
+      }
 
-    return reply.send({ total, items })
-  })
+      if (qStatus) {
+        where.status = qStatus
+      }
 
-  /* ---------- GET SINGLE ORDER ---------- */
+      const [items, total] = await Promise.all([
+        prisma.order.findMany({
+          where,
+          take: limit,
+          skip,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            items: true,
+            user: { select: { email: true } }
+          }
+        }),
+        prisma.order.count({ where })
+      ])
+
+      return reply.send({ total, items })
+    }
+  )
+
+  /* ---------- GET SINGLE ORDER (admin, multi-tenant) ---------- */
   app.get(
     '/orders/:id',
-    { preHandler: (app as any).admin },
-    async (req, reply) => {
+    { preHandler: app.admin },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const user = req.user
+      if (!user) {
+        return reply.code(401).send({ error: 'Unauthorized' })
+      }
+
       const id = (req.params as any).id as string
 
       const order = await prisma.order.findUnique({
@@ -143,19 +185,53 @@ export default async function orderRoutes (app: FastifyInstance) {
         }
       })
 
-      if (!order) return reply.code(404).send({ error: 'Order not found' })
+      if (!order) {
+        return reply.code(404).send({ error: 'Order not found' })
+      }
+
+      // Multi-tenant access control
+      if (user.role !== 'SUPER_ADMIN') {
+        if (!user.storeId || user.storeId !== order.storeId) {
+          return reply
+            .code(403)
+            .send({ error: 'You do not own this order/store.' })
+        }
+      }
 
       return reply.send(order)
     }
   )
 
-  
-  /* ---------- CREATE ORDER ---------- */
+  /* ---------- CREATE ORDER (admin, multi-tenant) ---------- */
   app.post(
     '/orders',
-    { preHandler: (app as any).admin },
-    async (req, reply) => {
+    { preHandler: app.admin },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const user = req.user
+      if (!user) {
+        return reply.code(401).send({ error: 'Unauthorized' })
+      }
+
       const body = createOrderDto.parse(req.body)
+
+      // Determine storeId
+      let storeId: string
+
+      if (user.role === 'SUPER_ADMIN') {
+        if (!body.storeId) {
+          return reply
+            .code(400)
+            .send({ error: 'SUPER_ADMIN must provide storeId for order.' })
+        }
+        storeId = body.storeId
+      } else {
+        if (!user.storeId) {
+          return reply
+            .code(400)
+            .send({ error: 'This user is not associated with a store.' })
+        }
+        storeId = user.storeId
+      }
 
       const computedSubtotal = body.items.reduce(
         (sum, it) => sum + it.unitPriceCents * it.quantity,
@@ -163,7 +239,6 @@ export default async function orderRoutes (app: FastifyInstance) {
       )
 
       const subtotalCents = body.subtotalCents || computedSubtotal
-
       const totalCents =
         body.totalCents ?? subtotalCents + body.deliveryCents + body.taxCents
 
@@ -175,8 +250,8 @@ export default async function orderRoutes (app: FastifyInstance) {
             phone: body.phone,
             email: body.email,
 
-            userId: body.userId,
-            storeId: body.storeId,
+            userId: body.userId ?? null,
+            storeId,
 
             streetAddress: body.streetAddress,
             division: body.division,
@@ -217,8 +292,8 @@ export default async function orderRoutes (app: FastifyInstance) {
     }
   )
 
-  /* ---------- CREATE ORDER FROM STOREFRONT (no admin auth) ---------- */
-  app.post('/storefront/orders', async (req, reply) => {
+  /* ---------- CREATE ORDER FROM STOREFRONT (public, multi-tenant) ---------- */
+  app.post('/storefront/orders', async (req: FastifyRequest, reply: FastifyReply) => {
     const body = storefrontCreateOrderDto.parse(req.body)
 
     // 1) Load products and ensure they all exist
@@ -243,12 +318,19 @@ export default async function orderRoutes (app: FastifyInstance) {
         .send({ error: 'One or more products no longer exist' })
     }
 
+    // Ensure all products belong to the same store (multi-tenant safety)
+    const storeIds = new Set(products.map(p => p.storeId))
+    if (storeIds.size > 1) {
+      return reply
+        .code(400)
+        .send({ error: 'All products in an order must belong to the same store.' })
+    }
+
     const productsById = new Map(products.map(p => [p.id, p]))
 
     // 2) Build order items with price + product metadata
     const itemCreates = body.items.map(it => {
       const p = productsById.get(it.productId)!
-
       const unitPriceCents = p.priceCents
       const lineTotalCents = unitPriceCents * it.quantity
 
@@ -277,7 +359,7 @@ export default async function orderRoutes (app: FastifyInstance) {
     const storeId = firstProduct.storeId
     const currency = firstProduct.currency || 'BDT'
 
-    // 4) Generate orderNumber (simple but unique enough for now)
+    // 4) Generate orderNumber (simple but unique-enough)
     const now = new Date()
     const datePart = now.toISOString().slice(0, 10).replace(/-/g, '')
     const randomPart = Math.floor(1000 + Math.random() * 9000)
@@ -323,69 +405,140 @@ export default async function orderRoutes (app: FastifyInstance) {
     return reply.code(201).send(created)
   })
 
-  /* ---------- UPDATE ORDER ---------- */
+  /* ---------- UPDATE ORDER (admin, multi-tenant) ---------- */
   app.put(
     '/orders/:id',
-    { preHandler: (app as any).admin },
-    async (req, reply) => {
+    { preHandler: app.admin },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const user = req.user
+      if (!user) {
+        return reply.code(401).send({ error: 'Unauthorized' })
+      }
+
       const id = (req.params as any).id as string
       const body = updateOrderDto.parse(req.body)
 
-      const updated = await prisma.order.update({
-        where: { id },
-        data: {
-          customerName: body.customerName,
-          phone: body.phone,
-          email: body.email,
+      try {
+        const existing = await prisma.order.findUnique({
+          where: { id },
+          select: { storeId: true }
+        })
 
-          streetAddress: body.streetAddress,
-          division: body.division,
-          district: body.district,
-          upazila: body.upazila,
-          city: body.city,
-          postalCode: body.postalCode,
+        if (!existing) {
+          return reply.code(404).send({ error: 'Order not found' })
+        }
 
-          customerNote: body.customerNote,
-          adminNote: body.adminNote,
+        if (user.role !== 'SUPER_ADMIN') {
+          if (!user.storeId || user.storeId !== existing.storeId) {
+            return reply
+              .code(403)
+              .send({ error: 'You do not own this order/store.' })
+          }
+        }
 
-          deliveryCents: body.deliveryCents,
-          taxCents: body.taxCents,
-          totalCents: body.totalCents,
-          status: body.status
-        },
-        include: { items: true }
-      })
+        const updated = await prisma.order.update({
+          where: { id },
+          data: {
+            customerName: body.customerName,
+            phone: body.phone,
+            email: body.email,
 
-      return reply.send(updated)
+            streetAddress: body.streetAddress,
+            division: body.division,
+            district: body.district,
+            upazila: body.upazila,
+            city: body.city,
+            postalCode: body.postalCode,
+
+            customerNote: body.customerNote,
+            adminNote: body.adminNote,
+
+            deliveryCents: body.deliveryCents,
+            taxCents: body.taxCents,
+            totalCents: body.totalCents,
+            status: body.status
+          },
+          include: { items: true }
+        })
+
+        return reply.send(updated)
+      } catch (err) {
+        req.log.error({ err, id }, 'PUT /orders/:id failed')
+        return reply.code(500).send({ error: 'Update failed' })
+      }
     }
   )
 
-  /* ---------- DELETE ORDER ---------- */
+  /* ---------- DELETE ORDER (admin, multi-tenant) ---------- */
   app.delete(
     '/orders/:id',
-    { preHandler: (app as any).admin },
-    async (req, reply) => {
+    { preHandler: app.admin },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const user = req.user
+      if (!user) {
+        return reply.code(401).send({ error: 'Unauthorized' })
+      }
+
       const id = (req.params as any).id as string
 
       try {
+        const existing = await prisma.order.findUnique({
+          where: { id },
+          select: { storeId: true }
+        })
+
+        if (!existing) {
+          return reply.code(404).send({ error: 'Order not found' })
+        }
+
+        if (user.role !== 'SUPER_ADMIN') {
+          if (!user.storeId || user.storeId !== existing.storeId) {
+            return reply
+              .code(403)
+              .send({ error: 'You do not own this order/store.' })
+          }
+        }
+
         await prisma.order.delete({ where: { id } })
         return reply.code(204).send()
       } catch (err) {
-        console.error('DELETE /orders error:', err)
+        req.log.error({ err, id }, 'DELETE /orders/:id failed')
         return reply.code(500).send({ error: 'Delete failed' })
       }
     }
   )
 
-  /* ---------- PATCH STATUS ---------- */
+  /* ---------- PATCH STATUS (admin, multi-tenant) ---------- */
   app.patch(
     '/orders/:id/status',
-    { preHandler: (app as any).admin },
-    async (req, reply) => {
+    { preHandler: app.admin },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const user = req.user
+      if (!user) {
+        return reply.code(401).send({ error: 'Unauthorized' })
+      }
+
       const id = (req.params as any).id as string
       const body = statusPatchDto.parse(req.body)
 
       try {
+        const existing = await prisma.order.findUnique({
+          where: { id },
+          select: { storeId: true }
+        })
+
+        if (!existing) {
+          return reply.code(404).send({ error: 'Order not found' })
+        }
+
+        if (user.role !== 'SUPER_ADMIN') {
+          if (!user.storeId || user.storeId !== existing.storeId) {
+            return reply
+              .code(403)
+              .send({ error: 'You do not own this order/store.' })
+          }
+        }
+
         const updated = await prisma.order.update({
           where: { id },
           data: { status: body.status }
@@ -393,39 +546,38 @@ export default async function orderRoutes (app: FastifyInstance) {
 
         return reply.send(updated)
       } catch (err) {
-        console.error('PATCH /orders/status error:', err)
+        req.log.error({ err, id }, 'PATCH /orders/:id/status failed')
         return reply.code(500).send({ error: 'Status update failed' })
       }
     }
   )
 
   // Public endpoint: storefront customers can see their order status by orderNumber
-app.get("/storefront/orders/:orderNumber", async (req, reply) => {
-  const { orderNumber } = (req.params as any) as { orderNumber: string };
+  app.get('/storefront/orders/:orderNumber', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { orderNumber } = (req.params as any) as { orderNumber: string }
 
-  // If orderNumber isn't required-unique in Prisma, use findFirst (safe)
-  const order = await prisma.order.findFirst({
-    where: { orderNumber },
-    select: {
-      orderNumber: true,
-      status: true,
-      totalCents: true,
-    },
-  });
+    const order = await prisma.order.findFirst({
+      where: { orderNumber },
+      select: {
+        orderNumber: true,
+        status: true,
+        totalCents: true
+      }
+    })
 
-  if (!order) {
-    return reply.code(404).send({ error: "Order not found" });
-  }
+    if (!order) {
+      return reply.code(404).send({ error: 'Order not found' })
+    }
 
-  return reply.send({
-    orderNumber: order.orderNumber,
-    status: order.status,
-    totalCents: order.totalCents,
-  });
-});
+    return reply.send({
+      orderNumber: order.orderNumber,
+      status: order.status,
+      totalCents: order.totalCents
+    })
+  })
 
-  /* ---------- PUBLIC: TRACK ORDER BY ORDER NUMBER ---------- */
-  app.get('/orders/track/:orderNumber', async (req, reply) => {
+  /* ---------- PUBLIC: TRACK ORDER BY ORDER NUMBER (detailed) ---------- */
+  app.get('/orders/track/:orderNumber', async (req: FastifyRequest, reply: FastifyReply) => {
     const orderNumber = (req.params as any).orderNumber as string
 
     try {
@@ -473,7 +625,7 @@ app.get("/storefront/orders/:orderNumber", async (req, reply) => {
 
       return reply.send(order)
     } catch (err) {
-      console.error('GET /orders/track error:', err)
+      ;(req as any).log?.error?.({ err, orderNumber }, 'GET /orders/track error')
       return reply.code(500).send({ error: 'Internal server error' })
     }
   })
